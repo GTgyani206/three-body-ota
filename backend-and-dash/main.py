@@ -5,11 +5,13 @@ Handles firmware binary uploads, validates metadata, and publishes
 OTA update notifications to the MQTT broker for device consumption.
 """
 
+import asyncio
 import json
 import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
 
+import aiofiles
 import paho.mqtt.client as mqtt
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from pydantic import BaseModel, Field
@@ -67,7 +69,8 @@ class MQTTPublisher:
             self._connected = False
             logger.warning("MQTT connection failed (%s) — server will continue without MQTT", exc)
 
-    def publish(self, topic: str, payload: str, qos: int = 1) -> bool:
+    def _publish_sync(self, topic: str, payload: str, qos: int = 1) -> bool:
+        """Blocking publish — intended to be called via asyncio.to_thread()."""
         if not self._connected:
             logger.warning("MQTT not connected — skipping publish to '%s'", topic)
             return False
@@ -79,6 +82,9 @@ class MQTTPublisher:
         except Exception as exc:
             logger.error("MQTT publish failed: %s", exc)
             return False
+
+    async def publish(self, topic: str, payload: str, qos: int = 1) -> bool:
+        return await asyncio.to_thread(self._publish_sync, topic, payload, qos)
 
     def disconnect(self) -> None:
         if self._connected:
@@ -137,16 +143,16 @@ async def upload_firmware(
     if not firmware.filename or not firmware.filename.endswith(".bin"):
         raise HTTPException(status_code=400, detail="Firmware file must have a .bin extension")
 
-    # --- 3. Stream-save the .bin to disk -------------------------------------
+    # --- 3. Async stream-save the .bin to disk --------------------------------
     dest_path = FIRMWARE_DIR / meta.file_name
     total_bytes = 0
     try:
-        with open(dest_path, "wb") as f:
+        async with aiofiles.open(dest_path, "wb") as f:
             while True:
                 chunk = await firmware.read(UPLOAD_CHUNK_SIZE)
                 if not chunk:
                     break
-                f.write(chunk)
+                await f.write(chunk)
                 total_bytes += len(chunk)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save firmware file: {exc}")
@@ -160,8 +166,8 @@ async def upload_firmware(
 
     logger.info("Firmware saved: %s (%d bytes)", dest_path.name, total_bytes)
 
-    # --- 4. Publish metadata to MQTT -----------------------------------------
-    mqtt_published = mqtt_publisher.publish(MQTT_TOPIC, meta.model_dump_json(), qos=1)
+    # --- 4. Publish metadata to MQTT (non-blocking) --------------------------
+    mqtt_published = await mqtt_publisher.publish(MQTT_TOPIC, meta.model_dump_json(), qos=1)
 
     return {
         "status": "ok",
