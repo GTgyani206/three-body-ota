@@ -15,6 +15,12 @@ struct Cli {
     file: PathBuf,
     #[arg(long, value_name = "VERSION_STRING")]
     version: String,
+    #[arg(long, value_name = "OUTPUT_PATH", conflicts_with = "stdout")]
+    output: Option<PathBuf>,
+    #[arg(long, conflicts_with = "stdout")]
+    force: bool,
+    #[arg(long)]
+    stdout: bool,
 }
 
 fn main() {
@@ -26,9 +32,9 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+    validate_bin_extension(&cli.file)?;
     let (file_size_bytes, sha256_hash) = hash_file(&cli.file)?;
     let file_name = file_name_from_path(&cli.file)?;
-    let metadata_path = metadata_output_path(&cli.file);
 
     let metadata_contents = format!(
         concat!(
@@ -45,9 +51,35 @@ fn run() -> Result<(), Box<dyn Error>> {
         serde_json::to_string(&sha256_hash)?,
     );
 
+    if cli.stdout {
+        print!("{metadata_contents}");
+        return Ok(());
+    }
+
+    let metadata_path = resolve_output_path(&cli);
+    if metadata_path.exists() && !cli.force {
+        return Err(Box::new(io::Error::new(
+            ErrorKind::AlreadyExists,
+            format!(
+                "output file '{}' already exists; pass --force to overwrite",
+                metadata_path.display()
+            ),
+        )));
+    }
+
     fs::write(&metadata_path, metadata_contents)?;
     println!("metadata.json generated at {}", metadata_path.display());
     Ok(())
+}
+
+fn validate_bin_extension(path: &Path) -> io::Result<()> {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("bin") => Ok(()),
+        _ => Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("input file '{}' must have a .bin extension", path.display()),
+        )),
+    }
 }
 
 fn hash_file(path: &Path) -> io::Result<(u64, String)> {
@@ -91,4 +123,11 @@ fn metadata_output_path(input_path: &Path) -> PathBuf {
     };
 
     output_dir.join("metadata.json")
+}
+
+fn resolve_output_path(cli: &Cli) -> PathBuf {
+    match &cli.output {
+        Some(path) => path.clone(),
+        None => metadata_output_path(&cli.file),
+    }
 }

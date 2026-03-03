@@ -6,14 +6,18 @@ OTA update notifications to the MQTT broker for device consumption.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
+from typing import Any
 
 import aiofiles
+import aiofiles.os
 import paho.mqtt.client as mqtt
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
@@ -21,6 +25,8 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 FIRMWARE_DIR = Path(__file__).parent / "firmware_storage"
 FIRMWARE_DIR.mkdir(exist_ok=True)
+
+REGISTRY_PATH = FIRMWARE_DIR / "registry.json"
 
 MQTT_BROKER_HOST = "localhost"
 MQTT_BROKER_PORT = 1883
@@ -41,6 +47,37 @@ class FirmwareMetadata(BaseModel):
     file_name: str = Field(..., min_length=1, description="Original .bin filename")
     file_size_bytes: int = Field(..., gt=0, description="Expected file size in bytes")
     sha256_hash: str = Field(..., pattern=r"^[a-fA-F0-9]{64}$", description="SHA-256 hex digest")
+
+
+# ---------------------------------------------------------------------------
+# Registry — file-based JSON persistence
+# ---------------------------------------------------------------------------
+
+async def _load_registry() -> dict[str, Any]:
+    if not REGISTRY_PATH.exists():
+        return {}
+    try:
+        async with aiofiles.open(REGISTRY_PATH, "r") as f:
+            return json.loads(await f.read())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+async def _save_registry(registry: dict[str, Any]) -> None:
+    async with aiofiles.open(REGISTRY_PATH, "w") as f:
+        await f.write(json.dumps(registry, indent=2))
+
+
+async def _compute_sha256(path: Path) -> str:
+    """Compute SHA-256 of a file using async I/O in 64 KB chunks."""
+    hasher = hashlib.sha256()
+    async with aiofiles.open(path, "rb") as f:
+        while True:
+            chunk = await f.read(UPLOAD_CHUNK_SIZE)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +160,7 @@ async def health_check():
     return {"status": "ok", "mqtt_connected": mqtt_publisher._connected}
 
 
-@app.post("/upload-firmware/")
+@app.post("/upload-firmware/", status_code=201)
 async def upload_firmware(
     firmware: UploadFile = File(..., description="Compiled .bin firmware file"),
     metadata: str = Form(..., description="JSON string matching FirmwareMetadata schema"),
@@ -143,7 +180,15 @@ async def upload_firmware(
     if not firmware.filename or not firmware.filename.endswith(".bin"):
         raise HTTPException(status_code=400, detail="Firmware file must have a .bin extension")
 
-    # --- 3. Async stream-save the .bin to disk --------------------------------
+    # --- 3. Duplicate version check ------------------------------------------
+    registry = await _load_registry()
+    if meta.version in registry:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Firmware version '{meta.version}' already exists in registry",
+        )
+
+    # --- 4. Async stream-save the .bin to disk --------------------------------
     dest_path = FIRMWARE_DIR / meta.file_name
     total_bytes = 0
     try:
@@ -164,9 +209,22 @@ async def upload_firmware(
             detail=f"File size mismatch: expected {meta.file_size_bytes} bytes, received {total_bytes}",
         )
 
-    logger.info("Firmware saved: %s (%d bytes)", dest_path.name, total_bytes)
+    # --- 5. SHA-256 re-verification ------------------------------------------
+    computed_hash = await _compute_sha256(dest_path)
+    if computed_hash != meta.sha256_hash.lower():
+        dest_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"SHA-256 mismatch: expected {meta.sha256_hash}, computed {computed_hash}",
+        )
 
-    # --- 4. Publish metadata to MQTT (non-blocking) --------------------------
+    logger.info("Firmware verified & saved: %s (%d bytes, sha256=%s)", dest_path.name, total_bytes, computed_hash)
+
+    # --- 6. Persist to registry ----------------------------------------------
+    registry[meta.version] = meta.model_dump()
+    await _save_registry(registry)
+
+    # --- 7. Publish metadata to MQTT (non-blocking) --------------------------
     mqtt_published = await mqtt_publisher.publish(MQTT_TOPIC, meta.model_dump_json(), qos=1)
 
     return {
@@ -174,5 +232,56 @@ async def upload_firmware(
         "file_name": meta.file_name,
         "file_size_bytes": total_bytes,
         "version": meta.version,
+        "sha256_verified": True,
         "mqtt_published": mqtt_published,
     }
+
+
+@app.get("/firmware/")
+async def list_firmware():
+    registry = await _load_registry()
+    return {"count": len(registry), "versions": list(registry.values())}
+
+
+@app.get("/firmware/{version}")
+async def get_firmware_metadata(version: str):
+    registry = await _load_registry()
+    if version not in registry:
+        raise HTTPException(status_code=404, detail=f"Firmware version '{version}' not found")
+    return registry[version]
+
+
+@app.get("/firmware/{version}/download")
+async def download_firmware(version: str):
+    registry = await _load_registry()
+    if version not in registry:
+        raise HTTPException(status_code=404, detail=f"Firmware version '{version}' not found")
+
+    file_name = registry[version]["file_name"]
+    file_path = FIRMWARE_DIR / file_name
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Binary file '{file_name}' missing from storage")
+
+    return FileResponse(
+        path=file_path,
+        filename=file_name,
+        media_type="application/octet-stream",
+    )
+
+
+@app.delete("/firmware/{version}")
+async def delete_firmware(version: str):
+    registry = await _load_registry()
+    if version not in registry:
+        raise HTTPException(status_code=404, detail=f"Firmware version '{version}' not found")
+
+    file_name = registry[version]["file_name"]
+    file_path = FIRMWARE_DIR / file_name
+    file_path.unlink(missing_ok=True)
+
+    del registry[version]
+    await _save_registry(registry)
+
+    logger.info("Firmware deleted: version=%s file=%s", version, file_name)
+    return {"status": "deleted", "version": version}
