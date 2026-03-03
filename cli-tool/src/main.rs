@@ -10,6 +10,8 @@ use std::fs::{self, File};
 use std::io::{self, BufReader, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
+const OTA_CHUNK_SIZE_BYTES: u64 = 4 * 1024;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "firmware_signer",
@@ -23,6 +25,24 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Generate unsigned OTA metadata JSON (version, sha256, size, chunks)
+    Metadata {
+        /// Path to the .bin firmware file
+        #[arg(long, value_name = "PATH")]
+        file: PathBuf,
+        /// Firmware version string (e.g. "1.2.3")
+        #[arg(long, value_name = "VER")]
+        version: String,
+        /// Output file path (default: metadata-unsigned.json next to input)
+        #[arg(long, value_name = "PATH", conflicts_with = "stdout")]
+        output: Option<PathBuf>,
+        /// Overwrite existing output file
+        #[arg(long, conflicts_with = "stdout")]
+        force: bool,
+        /// Print metadata JSON to stdout instead of writing a file
+        #[arg(long)]
+        stdout: bool,
+    },
     /// Sign a .bin firmware and generate signed metadata JSON
     Sign {
         /// Path to the .bin firmware file
@@ -78,6 +98,13 @@ fn main() {
 fn run() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Metadata {
+            file,
+            version,
+            output,
+            force,
+            stdout,
+        } => cmd_metadata(&file, &version, output.as_deref(), force, stdout),
         Commands::Sign {
             file,
             version,
@@ -107,6 +134,51 @@ fn run() -> Result<(), Box<dyn Error>> {
 // =========================================================================
 // Subcommand implementations
 // =========================================================================
+
+fn cmd_metadata(
+    bin_path: &Path,
+    version: &str,
+    output: Option<&Path>,
+    force: bool,
+    to_stdout: bool,
+) -> Result<(), Box<dyn Error>> {
+    validate_bin_extension(bin_path)?;
+    let (size, sha256) = hash_file(bin_path)?;
+    let chunks = size.div_ceil(OTA_CHUNK_SIZE_BYTES);
+
+    let doc = serde_json::json!({
+        "version": version,
+        "sha256": sha256,
+        "size": size,
+        "chunks": chunks,
+    });
+
+    let json_out = serde_json::to_string_pretty(&doc)?;
+
+    if to_stdout {
+        println!("{json_out}");
+        return Ok(());
+    }
+
+    let dest = match output {
+        Some(p) => p.to_path_buf(),
+        None => unsigned_metadata_output_path(bin_path),
+    };
+
+    if dest.exists() && !force {
+        return Err(Box::new(io::Error::new(
+            ErrorKind::AlreadyExists,
+            format!(
+                "'{}' already exists; use --force to overwrite",
+                dest.display()
+            ),
+        )));
+    }
+
+    fs::write(&dest, json_out)?;
+    eprintln!("Unsigned metadata written to {}", dest.display());
+    Ok(())
+}
 
 fn cmd_sign(
     bin_path: &Path,
@@ -349,6 +421,14 @@ fn metadata_output_path(input: &Path) -> PathBuf {
     dir.join("metadata.json")
 }
 
+fn unsigned_metadata_output_path(input: &Path) -> PathBuf {
+    let dir = match input.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    dir.join("metadata-unsigned.json")
+}
+
 // =========================================================================
 // Tests
 // =========================================================================
@@ -383,6 +463,13 @@ mod tests {
         let p = build_canonical_payload("a.bin", 1, &test_hash(), "v");
         assert!(!p.contains(' '), "canonical payload must not contain spaces: {p}");
         assert!(!p.contains('\n'), "canonical payload must not contain newlines");
+    }
+
+    #[test]
+    fn metadata_chunk_count_uses_4kb_pages() {
+        assert_eq!(1_u64.div_ceil(OTA_CHUNK_SIZE_BYTES), 1);
+        assert_eq!(4096_u64.div_ceil(OTA_CHUNK_SIZE_BYTES), 1);
+        assert_eq!(4097_u64.div_ceil(OTA_CHUNK_SIZE_BYTES), 2);
     }
 
     #[test]

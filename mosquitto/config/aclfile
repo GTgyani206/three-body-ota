@@ -1,0 +1,18 @@
+# Global ACL defaults (applies to all clients)
+# Dashboard/backend can read device status stream
+topic read device/+/status
+
+# Backend service permissions
+user three-body-backend
+topic write firmware/#
+topic read device/+/status
+
+# Streamlit dashboard permissions
+user three-body-dashboard
+topic read device/+/status
+topic read firmware/status
+
+# ESP32 device pattern permissions
+# Device client id must match {id} in device/{id}/status
+pattern write device/%c/status
+pattern read firmware/#

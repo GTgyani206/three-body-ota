@@ -201,8 +201,11 @@ The canonical schema used by **both** the Rust CLI (producer) and FastAPI backen
 ### 1. Start the MQTT Broker
 ```bash
 cd three-body-ota
+cp .env.example .env
 docker compose up -d
 ```
+
+Set `ADMIN_TOKEN` in `.env` before starting services. Compose now fails fast if it is missing.
 
 ### 2. Generate Signing Keys
 ```bash
@@ -285,6 +288,7 @@ pytest test_security.py -v
 - **File-based registry** — `registry.json` is not safe for concurrent writes. Fine for hackathon; production would use a proper database.
 - **No firmware chunking** — backend publishes metadata only; 4KB chunk streaming to devices is planned.
 - **Single admin token** — no user management or RBAC. Suitable for local development only.
+- **Certificate material in `mosquitto/certs/` is for local development only** — never use development CA/certs in production.
 
 ---
 
