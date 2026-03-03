@@ -7,13 +7,13 @@ services:
       - "1883:1883"
       - "8883:8883"
     volumes:
-      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/config/${MOSQUITTO_CONFIG_FILE:-mosquitto.conf}:/mosquitto/config/mosquitto.conf:ro
       - ./mosquitto/config/aclfile:/mosquitto/config/aclfile:ro
       - ./mosquitto/certs:/mosquitto/certs:ro
       - ./mosquitto/data:/mosquitto/data
       - ./mosquitto/log:/mosquitto/log
     healthcheck:
-      test: ["CMD-SHELL", "apk add --no-cache netcat-openbsd >/dev/null 2>&1 && nc -z localhost 1883"]
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -p 1883 -t healthcheck/ping -m ok -q 0"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -25,10 +25,12 @@ services:
     working_dir: /app
     command: sh -c "pip install --no-cache-dir -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8000"
     environment:
+      ENV: ${ENV:-development}
       MQTT_HOST: mosquitto
       MQTT_PORT: "1883"
       MQTT_USE_TLS: "false"
-      ADMIN_TOKEN: dev-token-change-me
+      MQTT_TLS_CA_CERT: ${MQTT_TLS_CA_CERT:-/certs/ca.crt}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?Please set ADMIN_TOKEN}
     volumes:
       - ./backend-and-dash:/app
       - ./backend-and-dash/firmware_storage:/app/firmware_storage
@@ -51,9 +53,11 @@ services:
     working_dir: /app
     command: sh -c "pip install --no-cache-dir -r requirements.txt && streamlit run streamlit/app.py --server.address=0.0.0.0 --server.port=8501"
     environment:
+      ENV: ${ENV:-development}
       MQTT_HOST: mosquitto
       MQTT_PORT: "1883"
       MQTT_USE_TLS: "false"
+      MQTT_TLS_CA_CERT: ${MQTT_TLS_CA_CERT:-/certs/ca.crt}
     volumes:
       - ./backend-and-dash:/app
       - ./mosquitto/certs:/certs:ro

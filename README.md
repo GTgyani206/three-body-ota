@@ -269,6 +269,23 @@ pytest test_security.py -v
 
 ---
 
+# DEV NOTE: Docker Compose Configuration
+
+**Status:** The current `docker-compose.yml` file has been modified from the original version to ensure the MQTT broker (`three-body-mqtt`) starts and reports as healthy.
+
+**Key Changes Applied:**
+1.  **MQTT Healthcheck:** The original healthcheck command, which attempted to use `mosquitto_sub` to query `$SYS/broker/version`, was replaced. This was necessary because the command failed consistently, likely due to restrictions related to `$SYS` topics in the default Mosquitto image or the provided `aclfile`, preventing the container from becoming healthy. The working replacement uses `netcat` (`nc`) to simply verify that the MQTT port (1883) is listening and accessible.
+2.  **Hardcoded Admin Token:** The `ADMIN_TOKEN` environment variable for the `fastapi` service is currently hardcoded (`dev-token-change-me`). This is suitable for local development but poses a security risk for production deployments.
+
+**Next Steps:**
+A separate file, `docker-compose.sample.yml` (or similar), will be created. This file will incorporate the suggestions from the AI code reviewer (CodeRabbit), including:
+*   Potentially reverting the `netcat` healthcheck to a method that uses `mosquitto_pub` for a more semantically correct MQTT check, or exploring other reliable TCP probing methods compatible with the `eclipse-mosquitto:2` image.
+*   Removing the hardcoded `ADMIN_TOKEN` and implementing environment variable substitution (e.g., `ADMIN_TOKEN: ${ADMIN_TOKEN:?Please set ADMIN_TOKEN}`) to enforce secure token management.
+
+The current `docker-compose.yml` remains functional for local development with the known deviations noted above.
+
+---
+
 ## Tech Stack
 
 | Layer     | Technology                              | Why                                              |
