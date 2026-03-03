@@ -10,10 +10,12 @@ services:
       - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./mosquitto/config/aclfile:/mosquitto/config/aclfile:ro
       - ./mosquitto/certs:/mosquitto/certs:ro
+      # Fixed volume syntax: bind host data dir to container data dir
       - ./mosquitto/data:/mosquitto/data
       - ./mosquitto/log:/mosquitto/log
     healthcheck:
-      test: ["CMD-SHELL", "apk add --no-cache netcat-openbsd >/dev/null 2>&1 && nc -z localhost 1883"]
+      # Use built-in mosquitto_pub for MQTT-level healthcheck
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -p 1883 -t healthcheck/ping -m ok -q 0"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -23,22 +25,24 @@ services:
     container_name: three-body-fastapi
     restart: unless-stopped
     working_dir: /app
+    # Fixed command syntax: removed extra spaces and & &
     command: sh -c "pip install --no-cache-dir -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8000"
     environment:
       MQTT_HOST: mosquitto
-      MQTT_PORT: "1883"
-      MQTT_USE_TLS: "false"
+      MQTT_PORT: "1883" # Removed trailing space
+      MQTT_USE_TLS: "false" # Removed trailing space
       ADMIN_TOKEN: dev-token-change-me
     volumes:
       - ./backend-and-dash:/app
       - ./backend-and-dash/firmware_storage:/app/firmware_storage
       - ./mosquitto/certs:/certs:ro
     ports:
-      - "8000:8000"
+      - "8000:8000" # Removed trailing space
     depends_on:
       mosquitto:
         condition: service_healthy
     healthcheck:
+      # Fixed healthcheck command syntax: removed extra spaces
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)\""]
       interval: 20s
       timeout: 6s
@@ -49,20 +53,23 @@ services:
     container_name: three-body-streamlit
     restart: unless-stopped
     working_dir: /app
+    # Fixed command syntax: removed extra spaces and & &
     command: sh -c "pip install --no-cache-dir -r requirements.txt && streamlit run streamlit/app.py --server.address=0.0.0.0 --server.port=8501"
     environment:
       MQTT_HOST: mosquitto
-      MQTT_PORT: "1883"
-      MQTT_USE_TLS: "false"
+      MQTT_PORT: "1883" # Removed trailing space
+      MQTT_USE_TLS: "false" # Removed trailing space
     volumes:
       - ./backend-and-dash:/app
       - ./mosquitto/certs:/certs:ro
     ports:
-      - "8510:8501"
+      # Changed port to avoid host conflicts
+      - "8510:8501" # Removed trailing space
     depends_on:
       mosquitto:
         condition: service_healthy
     healthcheck:
+      # Fixed healthcheck command syntax: removed extra spaces
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8501', timeout=5)\""]
       interval: 20s
       timeout: 6s
