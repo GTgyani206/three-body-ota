@@ -15,5 +15,6 @@ idf_component_register(
         mqtt
         mbedtls
         log
+        json
 )
 

@@ -1,0 +1,31 @@
+menu "Three-Body OTA Configuration"
+
+    menu "WiFi"
+        config ESP_WIFI_SSID
+            string "WiFi SSID"
+            default "YOUR_WIFI_NAME"
+            help
+                SSID (network name) to connect to.
+
+        config ESP_WIFI_PASSWORD
+            string "WiFi Password"
+            default "YOUR_WIFI_PASSWORD"
+            help
+                WiFi password (WPA2).
+    endmenu
+
+    menu "Server"
+        config FIRMWARE_SERVER_URL
+            string "Firmware server base URL"
+            default "http://192.168.1.100:8000"
+            help
+                Base URL of the FastAPI backend (no trailing slash).
+
+        config MQTT_BROKER_URL
+            string "MQTT broker URL"
+            default "mqtt://192.168.1.100:1883"
+            help
+                MQTT broker URI (mqtt:// for plain TCP).
+    endmenu
+
+endmenu
