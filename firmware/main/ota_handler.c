@@ -46,8 +46,10 @@ esp_err_t ota_start_update(const char *version, const char *expected_sha256, int
 
     esp_http_client_config_t config = {
         .url = download_url,
-        .timeout_ms = 10000,
+        .timeout_ms = 30000,
         .keep_alive_enable = true,
+        .buffer_size = 4096,
+        .buffer_size_tx = 1024,
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
