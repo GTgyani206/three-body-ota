@@ -9,5 +9,16 @@
     "key_id": null,
     "storage_name": "2.0.0_2d3478e24857.bin",
     "created_at": "2026-03-04T11:46:06.976399+00:00"
+  },
+  "3.0.0": {
+    "version": "3.0.0",
+    "file_name": "three_body_ota.bin",
+    "file_size_bytes": 924688,
+    "sha256_hash": "97b0ddf835092ec073774095885b645a68191203feedbed09dc05e913e3738f5",
+    "signing_alg": "ed25519",
+    "signature": "dev",
+    "key_id": null,
+    "storage_name": "3.0.0_97b0ddf83509.bin",
+    "created_at": "2026-03-04T13:20:00.892069+00:00"
   }
 }

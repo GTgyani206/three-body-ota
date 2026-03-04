@@ -60,7 +60,7 @@ docker compose logs -f mosquitto
 ```bash
 cd backend-and-dash
 pip install -r requirements.txt
-export ADMIN_TOKEN="your-secret-token"
+export ADMIN_TOKEN="replace-with-strong-random-token"
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -128,12 +128,12 @@ Note down the SHA256 hash and file size.
 ## Step 6: Upload Firmware to Backend
 
 ```bash
-# Replace SHA256 and SIZE with values from Step 5
-SHA256="your_sha256_hash_here"
-SIZE=926320  # Your actual size
+# Get SHA256 and size automatically
+SHA256=$(sha256sum build/three_body_ota.bin | cut -d' ' -f1)
+SIZE=$(stat --format=%s build/three_body_ota.bin)
 
 curl -X POST "http://localhost:8000/upload-firmware/" \
-  -H "X-Admin-Token: your-secret-token" \
+  -H "X-Admin-Token: replace-with-strong-random-token" \
   -F "firmware=@build/three_body_ota.bin" \
   -F "metadata={\"version\":\"2.0.0\",\"file_name\":\"three_body_ota.bin\",\"file_size_bytes\":${SIZE},\"sha256_hash\":\"${SHA256}\",\"signing_alg\":\"ed25519\",\"signature\":\"dev\"}"
 ```
@@ -145,15 +145,15 @@ curl http://localhost:8000/firmware/
 ```
 
 ---
-
 ## Step 7: Trigger OTA Update
 
 ```bash
-# Replace SHA256 and SIZE with your values
-docker exec three-body-mqtt mosquitto_pub \
+# -u three-body-backend is required — broker ACL blocks anonymous writes to firmware/#
+sudo docker exec three-body-mqtt mosquitto_pub \
   -h localhost \
+  -u three-body-backend \
   -t "firmware/update" \
-  -m '{"version":"2.0.0","sha256_hash":"YOUR_SHA256","file_size_bytes":YOUR_SIZE}'
+  -m "{\"version\":\"2.0.0\",\"sha256_hash\":\"${SHA256}\",\"file_size_bytes\":${SIZE}}"
 ```
 
 ---
@@ -176,6 +176,45 @@ I (XXX) app_init: App version:      2.0.0     ← SUCCESS!
 I (XXX) WIFI: Got IP: 192.168.x.x
 I (XXX) MAIN: MQTT_EVENT_CONNECTED
 I (XXX) MAIN: Firmware COMMITTED — Normal operation
+```
+
+---
+
+## Step 9: Verify the Update Succeeded
+
+After the device reboots, verify using any of these 3 methods:
+
+### Method 1: Serial Monitor
+```bash
+idf.py -p /dev/ttyUSB0 monitor
+```
+Look for:
+```
+I (386) app_init: App version:      2.0.0   ← VERSION CHANGED
+I (XXX) MAIN: MQTT connected
+I (XXX) MAIN: Heartbeat #1              ← SELF-TEST PASSED, COMMITTED
+```
+
+### Method 2: Subscribe to MQTT Heartbeat
+```bash
+sudo docker exec three-body-mqtt mosquitto_sub \
+  -h localhost \
+  -t "device/+/status" \
+  -v
+```
+Expected JSON:
+```json
+{
+  "device_id": "FC:E8:C0:E1:7E:54",
+  "firmware_version": "2.0.0",
+  "uptime_seconds": 42,
+  "free_heap": 216888
+}
+```
+
+### Method 3: Query Backend API
+```bash
+curl http://localhost:8000/firmware/
 ```
 
 ---

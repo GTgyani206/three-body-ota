@@ -4,6 +4,7 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_mac.h"
@@ -25,6 +26,24 @@ static volatile bool mqtt_connected = false;
 static char device_id[18] = {0};
 static const char *firmware_version = "unknown";
 static int64_t boot_time_us = 0;
+
+/*
+ * OTA task queue: the MQTT event handler enqueues OTA parameters and returns
+ * immediately. A dedicated FreeRTOS task dequeues and runs the actual update.
+ * This keeps the MQTT event loop non-blocking and avoids stack overflow
+ * (ota_start_update allocates large HTTP buffers that don't fit on the MQTT
+ * internal task stack).
+ */
+#define OTA_VERSION_MAX_LEN  32
+#define OTA_HASH_MAX_LEN     65
+
+typedef struct {
+    char version[OTA_VERSION_MAX_LEN];
+    char sha256_hash[OTA_HASH_MAX_LEN];
+    int  file_size_bytes;
+} ota_params_t;
+
+static QueueHandle_t ota_queue = NULL;
 
 /*
  * NVS stores the reboot counter across power cycles. If firmware crashes repeatedly
@@ -98,6 +117,27 @@ static void publish_heartbeat(void)
     cJSON_Delete(root);
 }
 
+/*
+ * ota_worker_task: Runs on its own stack (8KB) so that large HTTP buffers and
+ * the OTA write loop don't overflow the MQTT internal task stack.
+ * Waits indefinitely on ota_queue; one OTA at a time.
+ */
+static void ota_worker_task(void *arg)
+{
+    ota_params_t params;
+    while (1) {
+        if (xQueueReceive(ota_queue, &params, portMAX_DELAY) == pdTRUE) {
+            ESP_LOGI(TAG, "[OTA-TASK] Starting update to v%s (%d bytes)",
+                     params.version, params.file_size_bytes);
+            publish_status("OTA_STARTING");
+            ota_start_update(params.version, params.sha256_hash, params.file_size_bytes);
+            /* ota_start_update reboots on success; only returns on failure */
+            ESP_LOGE(TAG, "[OTA-TASK] Update failed — device remains on v%s", firmware_version);
+            publish_status("OTA_FAILED");
+        }
+    }
+}
+
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     esp_mqtt_event_handle_t event = event_data;
@@ -121,7 +161,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             ESP_LOGD(TAG, "MQTT subscribed, msg_id=%d", event->msg_id);
             break;
 
-        case MQTT_EVENT_DATA:
+        case MQTT_EVENT_DATA: {
             ESP_LOGI(TAG, "MQTT data on topic: %.*s", event->topic_len, event->topic);
 
             char *json_str = malloc(event->data_len + 1);
@@ -133,26 +173,40 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             json_str[event->data_len] = '\0';
 
             cJSON *root = cJSON_Parse(json_str);
+            free(json_str);
+
             if (root == NULL) {
                 ESP_LOGE(TAG, "Invalid JSON in OTA payload");
-                free(json_str);
                 break;
             }
 
-            cJSON *version = cJSON_GetObjectItem(root, "version");
-            cJSON *sha_hash = cJSON_GetObjectItem(root, "sha256_hash");
+            cJSON *version   = cJSON_GetObjectItem(root, "version");
+            cJSON *sha_hash  = cJSON_GetObjectItem(root, "sha256_hash");
             cJSON *file_size = cJSON_GetObjectItem(root, "file_size_bytes");
 
             if (cJSON_IsString(version) && cJSON_IsString(sha_hash) && cJSON_IsNumber(file_size)) {
-                ESP_LOGI(TAG, "OTA triggered: v%s (%d bytes)", version->valuestring, file_size->valueint);
-                ota_start_update(version->valuestring, sha_hash->valuestring, file_size->valueint);
+                ota_params_t params = {0};
+                strlcpy(params.version,      version->valuestring,   sizeof(params.version));
+                strlcpy(params.sha256_hash,  sha_hash->valuestring,  sizeof(params.sha256_hash));
+                params.file_size_bytes = file_size->valueint;
+
+                ESP_LOGI(TAG, "OTA command received: v%s (%d bytes) — queuing to OTA task",
+                         params.version, params.file_size_bytes);
+
+                /*
+                 * Non-blocking send (0 ticks): if a previous OTA is still running
+                 * (queue full), drop the duplicate command and warn.
+                 */
+                if (xQueueSend(ota_queue, &params, 0) != pdTRUE) {
+                    ESP_LOGW(TAG, "OTA already in progress — command dropped");
+                }
             } else {
                 ESP_LOGE(TAG, "Malformed OTA JSON: missing version/sha256_hash/file_size_bytes");
             }
 
             cJSON_Delete(root);
-            free(json_str);
             break;
+        }
 
         case MQTT_EVENT_ERROR:
             ESP_LOGE(TAG, "MQTT error");
@@ -217,6 +271,15 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     /*
+     * Create the OTA queue (depth=1) and worker task before MQTT starts.
+     * Depth of 1 intentionally prevents queuing multiple OTA commands; any
+     * duplicate is dropped with a warning.
+     */
+    ota_queue = xQueueCreate(1, sizeof(ota_params_t));
+    configASSERT(ota_queue);
+    xTaskCreate(ota_worker_task, "ota_worker", 8192, NULL, 5, NULL);
+
+    /*
      * A/B OTA State Check:
      * After esp_ota_set_boot_partition(), the bootloader boots into the new partition
      * with state ESP_OTA_IMG_PENDING_VERIFY. The firmware must call
@@ -263,7 +326,7 @@ void app_main(void)
 
     /* Self-test window: MQTT connectivity validates full network stack */
     if (pending_verify) {
-        ESP_LOGI(TAG, "Awaiting MQTT for self-test...");
+        ESP_LOGI(TAG, "[SELF-TEST] Waiting up to 15s for MQTT connection...");
         int wait_count = 0;
         while (!mqtt_connected && wait_count < 30) {
             vTaskDelay(pdMS_TO_TICKS(500));
@@ -271,13 +334,17 @@ void app_main(void)
         }
 
         if (mqtt_connected) {
-            ESP_LOGI(TAG, "*** SELF-TEST PASSED — COMMITTING OTA ***");
+            ESP_LOGI(TAG, "[SELF-TEST] PASSED — WiFi OK, MQTT OK");
+            ESP_LOGI(TAG, "[SELF-TEST] Calling esp_ota_mark_app_valid_cancel_rollback()");
             /* Mark partition valid; bootloader will no longer roll back */
             esp_ota_mark_app_valid_cancel_rollback();
             set_reboot_count(0);
+            ESP_LOGI(TAG, "[SELF-TEST] Firmware %s COMMITTED ✓", firmware_version);
             publish_status("COMMITTED");
         } else {
-            ESP_LOGE(TAG, "Self-test FAILED (MQTT timeout) — rebooting for rollback");
+            ESP_LOGE(TAG, "[SELF-TEST] FAILED — MQTT timed out after 15s");
+            ESP_LOGE(TAG, "[SELF-TEST] Rebooting — bootloader will rollback to previous firmware");
+            publish_status("SELF_TEST_FAILED");
             vTaskDelay(pdMS_TO_TICKS(1000));
             esp_restart();
         }

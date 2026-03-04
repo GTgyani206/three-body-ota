@@ -94,6 +94,8 @@ esp_err_t ota_start_update(const char *version, const char *expected_sha256, int
     }
 
     int total_read = 0;
+    int last_logged_pct = -1;
+    int content_length = esp_http_client_get_content_length(client);
     while (1) {
         int data_read = esp_http_client_read(client, ota_write_data, OTA_BUFF_SIZE);
         if (data_read < 0) {
@@ -108,6 +110,15 @@ esp_err_t ota_start_update(const char *version, const char *expected_sha256, int
             }
             mbedtls_sha256_update(&sha_ctx, (const unsigned char *)ota_write_data, data_read);
             total_read += data_read;
+            /* Log progress every 10% */
+            if (content_length > 0) {
+                int pct = (total_read * 100) / content_length;
+                int pct_bucket = pct / 10;
+                if (pct_bucket != last_logged_pct) {
+                    last_logged_pct = pct_bucket;
+                    ESP_LOGI(TAG, "Downloading... %d%% (%d / %d bytes)", pct, total_read, content_length);
+                }
+            }
         } else {
             if (esp_http_client_is_complete_data_received(client)) {
                 err = ESP_OK;
