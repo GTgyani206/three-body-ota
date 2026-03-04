@@ -1,0 +1,127 @@
+give the summary of entire conversation, everything that you know and that we tried, where are we now and what we wanna do ?
+12:53 AM
+Full Summary — Three Body Problem OTA Project
+Who You Are
+
+    You (Devyanshu) — ESP32 firmware developer (new to embedded)
+    Gyanendra — Backend (FastAPI + Rust CLI) ✅ Done
+    Kalpesh — MQTT broker (Mosquitto) + Dashboard ✅ Done
+    Team name: Three Body Problem
+    Hackathon: SanDisk — Track: Firmware
+
+What We're Building
+
+A Fail-Safe OTA Firmware Update System for ESP32. The core idea — when new firmware is pushed, the device downloads it, verifies it, boots into it in trial mode, runs a self-test, and only commits if everything works. If anything fails at any point — power cut, bad firmware, crash — the bootloader automatically rolls back to the previous working firmware. Device can never be permanently bricked.
+Tech Stack (Finalized)
+Layer	Choice
+MCU	ESP32 DEVKIT V1 (4MB flash)
+Firmware	C + ESP-IDF v5.3 + FreeRTOS
+Communication	MQTT over WiFi → Mosquitto broker
+Backend	Python FastAPI (Gyanendra) ✅
+Signing	Rust CLI — Ed25519 signatures (Gyanendra) ✅
+Dashboard	Streamlit (Kalpesh) ✅
+What Gyanendra's Backend Does
+
+MQTT Topic:   firmware/update
+Broker:       localhost:1883
+Message JSON:
+  {
+    "version":         "1.0.0",
+    "file_name":       "firmware.bin",
+    "file_size_bytes": 123456,
+    "sha256_hash":     "abcdef...",
+    "signature":       "base64...",
+    "signing_alg":     "ed25519"
+  }
+
+Download URL: http://<server-ip>:8000/firmware/{version}/download
+
+The firmware on ESP32 needs to subscribe to firmware/update, parse this JSON, download the binary via HTTP, verify SHA-256, flash to Partition B, reboot, self-test, then commit or let rollback happen.
+What We've Done So Far
+
+Environment Setup ✅
+
+    Installed ESP-IDF v5.3 on Ubuntu Neon
+    Solved fish shell issue — working in bash
+    Fixed multiple missing git submodules one by one
+
+First Flash ✅
+
+    Built and flashed native_ota_example from ESP-IDF
+    Confirmed ESP32 boots correctly
+    Confirmed A/B partition table is working on the chip:
+
+factory    0x10000   1MB
+ota_0      0x110000  1MB  ← Partition A
+ota_1      0x210000  1MB  ← Partition B
+
+Our Project Structure ✅
+
+    Cloned three-body-ota repo
+    Created firmware/ folder structure
+    Written 3 config files:
+        CMakeLists.txt (root)
+        main/CMakeLists.txt
+        sdkconfig.defaults
+    Created empty files: main.c, wifi.c, wifi.h, ota_handler.c, ota_handler.h
+
+Where We Are RIGHT NOW ⚠️
+
+Stuck on build errors — ESP-IDF submodules are missing one by one:
+
+    ✅ Fixed: cmock, esp_wifi, bootloader/micro-ecc
+    ❌ Still failing: esp_phy, esp_coex (missing .a library files)
+
+The fix running in background:
+bash
+
+cd ~/esp/esp-idf
+git submodule update --init --recursive
+```
+This downloads ALL missing submodules at once. **Once this finishes, all build errors stop permanently.**
+
+---
+
+## What We Need to Write (0 lines of actual firmware yet)
+```
+main.c         ← entry point, NVS init, launch tasks
+wifi.c         ← connect to WiFi, handle reconnects  
+wifi.h         ← header for wifi.c
+ota_handler.c  ← download firmware, SHA-256 verify, flash to Partition B,
+                  reboot, self-test, commit or rollback
+ota_handler.h  ← header for ota_handler.c
+partition.csv  ← custom partition table with A/B layout
+```
+
+---
+
+## The 5-Step Flow Our Firmware Does
+```
+1. Boot → init NVS → connect WiFi
+2. Subscribe to MQTT topic "firmware/update"
+3. On message → parse JSON → download .bin from FastAPI server
+4. Verify SHA-256 → write to Partition B → reboot
+5. Post-reboot → self-test (WiFi + MQTT) →
+        PASS → esp_ota_mark_app_valid_cancel_rollback() ✅
+        FAIL → do nothing → bootloader auto-rollbacks ⏪
+
+Immediate Next Steps
+
+Right now:
+
+    Wait for git submodule update --init --recursive to finish
+    Run idf.py fullclean && idf.py build — should succeed with empty files
+    Confirm clean build ✅
+
+Then immediately:
+
+    Write main.c — I give you the complete file
+    Write wifi.c + wifi.h
+    Write ota_handler.c + ota_handler.h
+    Add custom partition.csv for A/B layout
+    Build → Flash → Test happy path
+    Test rollback path (deliberately broken firmware)
+    Connect to Gyanendra's backend + Kalpesh's broker
+    Full end-to-end demo works 🎯
+
+Tell me when the submodule update finishes and we write the first file immediately! ⚡

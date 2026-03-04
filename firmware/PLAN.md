@@ -6,19 +6,35 @@
 
 ---
 
+## Progress Summary
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 0 | Build & Flash Sanity | ✅ Complete |
+| 1 | WiFi Connect | ✅ Complete |
+| 2 | MQTT Client | ✅ Complete |
+| 3 | Custom Partition Table | ✅ Complete |
+| 4 | OTA Download + Flash | ✅ Complete |
+| 5 | Self-Test & Rollback | ✅ Complete |
+| 6 | Status Reporting | ✅ Complete |
+| 7 | Integration Demo | 🔲 Ready to Test |
+
+---
+
 ## Current State
 
 | File | Status |
 |------|--------|
-| `main.c` | Hello-world loop (compiles) |
-| `wifi.c` / `wifi.h` | Empty |
-| `ota_handler.c` / `ota_handler.h` | Empty |
-| `partition.csv` | Does not exist |
-| `sdkconfig.defaults` | Placeholder WiFi creds + server URLs |
+| `main.c` | Full implementation with OTA, self-test, status reporting |
+| `wifi.c` / `wifi.h` | WiFi STA with auto-reconnect |
+| `ota_handler.c` / `ota_handler.h` | HTTP download, SHA-256 verify, flash to Partition B |
+| `partition.csv` | A/B OTA layout (1.5MB per partition) |
+| `Kconfig.projbuild` | WiFi creds + server URLs in menuconfig |
+| `sdkconfig.defaults` | 4MB flash, custom partition table |
 
 ---
 
-## Phase 0 — Build & Flash Sanity
+## Phase 0 — Build & Flash Sanity ✅
 
 **Goal:** Confirm toolchain works end-to-end. ESP32 boots, you see serial output.
 
@@ -34,7 +50,7 @@
 
 ---
 
-## Phase 1 — WiFi Connect
+## Phase 1 — WiFi Connect ✅
 
 **Goal:** ESP32 connects to your WiFi network and gets an IP address. Handles reconnects.
 
@@ -54,7 +70,7 @@
 
 ---
 
-## Phase 2 — MQTT Client
+## Phase 2 — MQTT Client ✅
 
 **Goal:** ESP32 connects to Mosquitto broker, subscribes to `firmware/update`, prints received messages.
 
@@ -80,7 +96,7 @@
 
 ---
 
-## Phase 3 — Custom Partition Table
+## Phase 3 — Custom Partition Table ✅
 
 **Goal:** Set up A/B OTA partition layout on flash.
 
@@ -108,7 +124,7 @@
 
 ---
 
-## Phase 4 — OTA Download + Flash (Core)
+## Phase 4 — OTA Download + Flash (Core) ✅
 
 **Goal:** On MQTT trigger, download firmware via HTTP, verify SHA-256, write to Partition B, reboot.
 
@@ -143,7 +159,7 @@
 
 ---
 
-## Phase 5 — Self-Test, Commit & Rollback
+## Phase 5 — Self-Test, Commit & Rollback ✅
 
 **Goal:** After rebooting into new firmware, run self-tests. Commit if all pass, otherwise let bootloader rollback automatically.
 
@@ -177,7 +193,7 @@
 
 ---
 
-## Phase 6 — Status Reporting via MQTT
+## Phase 6 — Status Reporting via MQTT ✅
 
 **Goal:** ESP32 publishes its status back to the broker so the dashboard can display it.
 

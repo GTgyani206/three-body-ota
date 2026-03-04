@@ -93,9 +93,9 @@ Once the device confirms health, it calls `esp_ota_mark_app_valid_cancel_rollbac
 | **FastAPI Backend** | ✅ Implemented | Upload, CRUD, auth, path safety, signature verification, MQTT publish |
 | **Mosquitto Broker** | ✅ Implemented | Docker Compose config, anonymous local dev, QoS 1 |
 | **Security Tests** | ✅ Implemented | 13 pytest tests + 9 Rust unit tests |
-| **ESP32 Firmware** | 🔲 Planned | A/B partitions, OTA engine, MQTT client, 3-stage commit |
+| **ESP32 Firmware** | ✅ Implemented | A/B partitions, OTA engine, MQTT client, 3-stage commit, auto-rollback |
 | **Streamlit Dashboard** | 🔲 Planned | Fleet view, OTA progress monitor, rollback controls |
-| **Chunked MQTT Delivery** | 🔲 Planned | Backend splitting .bin into 4KB chunks over MQTT |
+| **Chunked MQTT Delivery** | — Not Needed | Using HTTP download instead (simpler, works with current backend) |
 | **TLS / Broker ACLs** | 🔲 Planned | Production security for MQTT transport |
 
 ---
@@ -117,7 +117,17 @@ three-body-ota/
 │   ├── test_security.py            ← pytest security test suite (13 tests)
 │   └── firmware_storage/           ← Uploaded .bin files + registry.json
 │
-├── firmware/                       ← ESP-IDF C project (Developer 1) — not yet started
+├── firmware/                       ← ESP-IDF C project (Developer 1) ✅ COMPLETE
+│   ├── main/
+│   │   ├── main.c                  ← Entry point, MQTT, self-test, status reporting
+│   │   ├── wifi.c / wifi.h         ← WiFi STA driver with auto-reconnect
+│   │   ├── ota_handler.c / .h      ← HTTP download, SHA-256 verify, flash
+│   │   ├── Kconfig.projbuild       ← Menuconfig options
+│   │   └── CMakeLists.txt
+│   ├── partition.csv               ← A/B OTA partition layout
+│   ├── sdkconfig.defaults          ← Build configuration
+│   ├── PLAN.md                     ← Development phases
+│   └── README.md                   ← Firmware-specific documentation
 │
 ├── mosquitto/
 │   └── config/
