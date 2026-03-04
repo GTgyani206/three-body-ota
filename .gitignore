@@ -36,3 +36,10 @@ managed_components/
 
 # === Firmware binaries ===
 *.bin
+
+# === Certificates / secrets (never commit private PKI material) ===
+mosquitto/certs/*.key
+mosquitto/certs/*.pem
+mosquitto/certs/*.csr
+mosquitto/certs/*.srl
+mosquitto/certs/*.crt

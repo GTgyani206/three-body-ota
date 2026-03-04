@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import ssl
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from contextlib import asynccontextmanager
@@ -36,14 +37,55 @@ MQTT_BROKER_HOST = os.environ.get("MQTT_HOST", "localhost")
 MQTT_BROKER_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 MQTT_TOPIC = "firmware/update"
 MQTT_CLIENT_ID = "three-body-backend"
+MQTT_USE_TLS = os.environ.get("MQTT_USE_TLS", "false").lower() in {"1", "true", "yes"}
+APP_ENV = os.environ.get("ENV", os.environ.get("NODE_ENV", "development")).lower()
+MQTT_TLS_CA_CERT = os.environ.get(
+    "MQTT_TLS_CA_CERT",
+    "/certs/ca.crt" if APP_ENV in {"development", "dev", "local", "test"} else "",
+) or None
+MQTT_TLS_CLIENT_CERT = os.environ.get("MQTT_TLS_CLIENT_CERT")
+MQTT_TLS_CLIENT_KEY = os.environ.get("MQTT_TLS_CLIENT_KEY")
 
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "dev-token-change-me")
 SIGNING_PUBLIC_KEY_PATH = os.environ.get("SIGNING_PUBLIC_KEY_PATH")
 
 UPLOAD_CHUNK_SIZE = 64 * 1024  # 64 KB streaming chunks
+MQTT_FW_CHUNK_SIZE = 4 * 1024
 
 logger = logging.getLogger("three-body-ota")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def _is_production_env() -> bool:
+    return APP_ENV in {"production", "prod"}
+
+
+def _validate_tls_ca_for_environment(ca_cert_path: str | None) -> None:
+    if not MQTT_USE_TLS:
+        return
+
+    if _is_production_env() and not ca_cert_path:
+        raise RuntimeError("MQTT TLS requires MQTT_TLS_CA_CERT in production")
+
+    if not ca_cert_path:
+        return
+
+    if _is_production_env():
+        try:
+            cert_info = ssl._ssl._test_decode_cert(ca_cert_path)
+            subject = cert_info.get("subject", ())
+            subject_parts = ["=".join(item) for group in subject for item in group]
+            subject_joined = " ".join(subject_parts).lower()
+            if "threebodyota-dev-ca" in subject_joined or "=dev" in subject_joined:
+                raise RuntimeError(
+                    "Refusing to start in production with development CA certificate"
+                )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Unable to validate MQTT TLS CA certificate '{ca_cert_path}': {exc}"
+            ) from exc
 
 # ---------------------------------------------------------------------------
 # Ed25519 public key loading (optional — enables signature verification)
@@ -196,7 +238,25 @@ class MQTTPublisher:
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             client_id=client_id,
         )
+        self._client.on_disconnect = self._on_disconnect
         self._connected = False
+
+        if MQTT_USE_TLS:
+            try:
+                _validate_tls_ca_for_environment(MQTT_TLS_CA_CERT)
+                self._client.tls_set(
+                    ca_certs=MQTT_TLS_CA_CERT,
+                    certfile=MQTT_TLS_CLIENT_CERT,
+                    keyfile=MQTT_TLS_CLIENT_KEY,
+                )
+                logger.info("MQTT TLS enabled")
+            except Exception as exc:
+                logger.critical("MQTT TLS configuration failed: %s", exc)
+                raise RuntimeError("MQTT TLS is required but misconfigured") from exc
+
+    def _on_disconnect(self, _client, _userdata, flags, reason_code, _properties):
+        self._connected = False
+        logger.warning("MQTT disconnected (reason=%s, flags=%s)", reason_code, flags)
 
     def connect(self) -> None:
         try:
@@ -343,8 +403,23 @@ async def upload_firmware(
     registry[meta.version] = entry
     await _save_registry(registry)
 
-    # 10. Publish metadata to MQTT (non-blocking)
-    mqtt_published = await mqtt_publisher.publish(MQTT_TOPIC, meta.model_dump_json(), qos=1)
+    # 10. Publish OTA metadata to MQTT (non-blocking)
+    chunks = (total_bytes + MQTT_FW_CHUNK_SIZE - 1) // MQTT_FW_CHUNK_SIZE
+    mqtt_payload = {
+        "version": meta.version,
+        "sha256_hash": computed_hash,
+        "size": total_bytes,
+        "chunks": chunks,
+        "file_name": meta.file_name,
+    }
+    mqtt_published = await mqtt_publisher.publish(
+        MQTT_TOPIC,
+        json.dumps(mqtt_payload),
+        qos=1,
+    )
+
+    if not mqtt_published:
+        logger.error("Firmware uploaded but MQTT publish failed for version=%s", meta.version)
 
     return {
         "status": "ok",
@@ -362,6 +437,12 @@ async def upload_firmware(
 async def list_firmware():
     registry = await _load_registry()
     return {"count": len(registry), "versions": list(registry.values())}
+
+
+@app.get("/firmware/versions")
+async def list_firmware_versions():
+    registry = await _load_registry()
+    return {"count": len(registry), "versions": sorted(registry.keys())}
 
 
 @app.get("/firmware/{version}")
