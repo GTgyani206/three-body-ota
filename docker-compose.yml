@@ -25,13 +25,14 @@ services:
     container_name: three-body-fastapi
     restart: unless-stopped
     working_dir: /app
-    # Fixed command syntax: removed extra spaces and & &
-    command: sh -c "pip install --no-cache-dir -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8000"
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
+             && uvicorn main:app --host 0.0.0.0 --port 8000"
     environment:
       MQTT_HOST: mosquitto
-      MQTT_PORT: "1883" # Removed trailing space
-      MQTT_USE_TLS: "false" # Removed trailing space
-      ADMIN_TOKEN: dev-token-change-me
+      MQTT_PORT: "1883"
+      MQTT_USE_TLS: "false"
+      ADMIN_TOKEN: "replace-with-strong-random-token"
     volumes:
       - ./backend-and-dash:/app
       - ./backend-and-dash/firmware_storage:/app/firmware_storage

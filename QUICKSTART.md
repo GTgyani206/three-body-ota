@@ -17,6 +17,27 @@ Get the entire OTA system running in under 10 minutes.
 
 ---
 
+## Quick Test (Automated)
+
+If you've already set up WiFi and server IPs in `firmware/sdkconfig.defaults`, run the entire OTA flow with one command:
+
+```bash
+# Source ESP-IDF first
+. $HOME/esp/esp-idf/export.sh
+
+# Full test: flash v1.0.0 → OTA to v2.0.0
+./test_ota.sh
+
+# Skip flash, just do OTA (device already running a base version)
+./test_ota.sh --ota-only --version 3.0.0
+```
+
+The script auto-detects your IP, starts infra, builds, flashes, uploads, triggers OTA, and verifies — all in one shot.
+
+For manual step-by-step setup, continue below.
+
+---
+
 ## Step 1: Clone the Repository
 
 ```bash
@@ -84,8 +105,15 @@ sed -i 's/PROJECT_VER ".*"/PROJECT_VER "1.0.0"/' CMakeLists.txt
 rm -rf build sdkconfig
 idf.py build
 
-# Flash to ESP32
-idf.py -p /dev/ttyUSB0 flash
+# Flash to ESP32 (use 115200 baud — default 460800 is unstable on DEVKIT V1)
+sudo fuser -k /dev/ttyUSB0 2>/dev/null; sleep 1
+python -m esptool --chip esp32 -p /dev/ttyUSB0 -b 115200 \
+  --before default_reset --after hard_reset write_flash \
+  --flash_mode dio --flash_size 4MB --flash_freq 40m \
+  0x1000 build/bootloader/bootloader.bin \
+  0x8000 build/partition_table/partition-table.bin \
+  0xd000 build/ota_data_initial.bin \
+  0x10000 build/three_body_ota.bin
 
 # Monitor serial output
 idf.py -p /dev/ttyUSB0 monitor
@@ -110,10 +138,9 @@ Press `Ctrl+]` to exit monitor.
 cd firmware
 
 # Change version
-sed -i 's/PROJECT_VER "1.0.0"/PROJECT_VER "2.0.0"/' CMakeLists.txt
+sed -i 's/PROJECT_VER ".*"/PROJECT_VER "2.0.0"/' CMakeLists.txt
 
-# Rebuild (don't flash!)
-rm -rf build
+# Rebuild (don't flash!) — only version string changed, no clean needed
 idf.py build
 
 # Get SHA256 and size
@@ -134,14 +161,14 @@ SIZE=$(stat --format=%s build/three_body_ota.bin)
 
 curl -X POST "http://localhost:8000/upload-firmware/" \
   -H "X-Admin-Token: replace-with-strong-random-token" \
-  -F "firmware=@build/three_body_ota.bin" \
-  -F "metadata={\"version\":\"2.0.0\",\"file_name\":\"three_body_ota.bin\",\"file_size_bytes\":${SIZE},\"sha256_hash\":\"${SHA256}\",\"signing_alg\":\"ed25519\",\"signature\":\"dev\"}"
+  -F "firmware=@build/three_body_ota.bin;type=application/octet-stream" \
+  -F "metadata={\"version\":\"2.0.0\",\"file_size_bytes\":${SIZE},\"sha256_hash\":\"${SHA256}\"}"
 ```
 
 Verify upload:
 ```bash
-curl http://localhost:8000/firmware/
-# Should list version 2.0.0
+curl http://localhost:8000/firmware/2.0.0
+# Should show version 2.0.0 metadata
 ```
 
 ---

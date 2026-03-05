@@ -110,11 +110,11 @@ if SIGNING_PUBLIC_KEY_PATH:
 
 class FirmwareMetadata(BaseModel):
     version: str = Field(..., min_length=1, description="Semantic firmware version")
-    file_name: str = Field(..., min_length=1, description="Original .bin filename")
+    file_name: str = Field(default="firmware.bin", min_length=1, description="Original .bin filename")
     file_size_bytes: int = Field(..., gt=0, description="Expected file size in bytes")
     sha256_hash: str = Field(..., pattern=r"^[a-fA-F0-9]{64}$", description="SHA-256 hex digest")
-    signing_alg: str = Field(..., pattern=r"^ed25519$", description="Signing algorithm")
-    signature: str = Field(..., min_length=1, description="Base64-encoded Ed25519 signature")
+    signing_alg: str = Field(default="none", description="Signing algorithm (ed25519 or none)")
+    signature: str = Field(default="", description="Base64-encoded Ed25519 signature (empty if unsigned)")
     key_id: str | None = Field(default=None, description="Optional key identifier")
 
 
@@ -163,8 +163,10 @@ def _storage_filename(version: str, sha256_hash: str) -> str:
 
 
 def _verify_signature(meta: FirmwareMetadata) -> None:
-    """Verify Ed25519 signature over canonical payload. No-op if no public key configured."""
+    """Verify Ed25519 signature over canonical payload. No-op if no public key configured or unsigned."""
     if _verify_key is None:
+        return
+    if meta.signing_alg == "none" or not meta.signature:
         return
 
     # Canonical payload: compact JSON, alphabetical keys — must match Rust CLI exactly
@@ -404,13 +406,11 @@ async def upload_firmware(
     await _save_registry(registry)
 
     # 10. Publish OTA metadata to MQTT (non-blocking)
-    chunks = (total_bytes + MQTT_FW_CHUNK_SIZE - 1) // MQTT_FW_CHUNK_SIZE
+    # Keys must match what firmware/main/main.c expects: version, sha256_hash, file_size_bytes
     mqtt_payload = {
         "version": meta.version,
         "sha256_hash": computed_hash,
-        "size": total_bytes,
-        "chunks": chunks,
-        "file_name": meta.file_name,
+        "file_size_bytes": total_bytes,
     }
     mqtt_published = await mqtt_publisher.publish(
         MQTT_TOPIC,
